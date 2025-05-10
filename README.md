@@ -1,8 +1,8 @@
 # Daria Scraper
 
-A web scraping tool built with Python and BeautifulSoup.<br>
-Data extracted from https://outpost-daria-reborn.info, <br>
-thanks to Kevin Bess (a.k.a. NeonHomer) for all his effort and dedication to the Daria community.
+A web scraping tool built with Python and BeautifulSoup.
+
+Data extracted from https://outpost-daria-reborn.info, thanks to Kevin Bess (a.k.a. NeonHomer) for all his effort and dedication to the Daria community.
 
 ## Installation
 
