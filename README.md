@@ -1,7 +1,8 @@
 # Daria Scraper
 
 A web scraping tool built with Python and BeautifulSoup.<br>
-Data extracted from https://outpost-daria-reborn.info/episode_guide.html
+Data extracted from https://outpost-daria-reborn.info, <br>
+thanks to Kevin Bess (a.k.a. NeonHomer) for all his effort and dedication to the Daria community.
 
 ## Installation
 
@@ -33,39 +34,6 @@ poetry install
 
 ```bash
 poetry run python -m daria_scraper.main
-```
-
-### Configure Target URLs
-
-Edit the `config.py` file to specify your target websites:
-
-```python
-TARGETS = [
-    {
-        "url": "https://example.com",
-        "name": "Example Site",
-        "selectors": {
-            "title": "h1",
-            "links": "a",
-            "content": "article p"
-        }
-    }
-]
-```
-
-## Project Structure
-
-```
-daria-scraper/
-├── pyproject.toml         # Poetry configuration
-├── daria_scraper/           # Main package
-│   ├── __init__.py
-│   ├── main.py            # Entry point
-│   ├── scrapers/          # Scraper modules
-│   ├── utils.py           # Helper functions
-│   └── config.py          # Configuration
-├── data/                  # Scraped data output
-└── tests/                 # Test directory
 ```
 
 ## Configuration Options
