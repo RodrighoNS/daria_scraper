@@ -33,7 +33,7 @@ poetry install
 ### Basic Scraping
 
 ```bash
-poetry run python -m daria_scraper.main
+poetry run daria-scraper
 ```
 
 ## Configuration Options
