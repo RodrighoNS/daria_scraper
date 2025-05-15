@@ -1,15 +1,16 @@
 """
 Main entry point for the Daria Outpost Reborn web scraper.
-This script provides a focused approach to scrape Daria's
-character information and alter ego images.
+This script provides a focused approach to scrape character
+information and alter ego images.
 """
 import time
 import logging
 import json
+import argparse
 from datetime import datetime
 from pathlib import Path
 from urllib.parse import urljoin
-import re
+# import re
 import requests
 from bs4 import BeautifulSoup
 
@@ -17,7 +18,7 @@ from bs4 import BeautifulSoup
 from daria_scraper import config
 
 class DariaScraper:
-    """Scraper class focused on extracting Daria's character info and alter ego images."""
+    """Scraper class focused on extracting character info and alter ego images."""
 
     def __init__(self):
         """Initialize the scraper with configuration settings."""
@@ -85,15 +86,19 @@ class DariaScraper:
             self.logger.error("Error saving data: %s", e)
             return None
 
-    def scrape_daria_character_with_alter_egos(self):
+    def find_character_page(self, character_name):
         """
-        Scrape Daria's character information and her alter ego images.
-        This is a focused approach for the first iteration.
-        """
-        self.logger.info("Starting focused scrape of Daria's character and alter egos")
+        Find a character's page URL from the characters index page.
 
-        # Step 1: Start with the characters page
-        characters_url = "https://outpost-daria-reborn.info/characters.html"
+        Args:
+            character_name: Name of the character to find (e.g., 'daria', 'jane')
+
+        Returns:
+            Character page URL or None if not found
+        """
+        characters_url = urljoin(self.target['base_url'], "characters.html")
+        self.logger.info("Looking for %s's character page on %s", character_name, characters_url)
+
         response = self.fetch_page(characters_url)
         if not response:
             self.logger.error("Failed to retrieve the characters page.")
@@ -101,284 +106,253 @@ class DariaScraper:
 
         soup = self.parse_html(response.text)
 
-        # Step 2: Find Daria's character page link
-        daria_link = None
+        # First, try to find by specific href pattern (e.g., ch_daria.html)
         for link in soup.select("a"):
-            href = link.get('href')
+            href = link.get('href', '')
+            if href and f"ch_{character_name.lower()}.html" in href.lower():
+                char_url = urljoin(self.target['base_url'], href)
+                self.logger.info("Found %s's character page by href: %s", character_name, char_url)
+                return char_url
+
+        # If not found by href, try by link text
+        for link in soup.select("a"):
             text = link.text.strip()
+            if text.lower() == character_name.lower():
+                href = link.get('href', '')
+                if href:
+                    char_url = urljoin(self.target['base_url'], href)
+                    self.logger.info("Found %s's character page by text: %s", character_name, char_url)
+                    return char_url
 
-            if href and ("ch_daria.html" in href or text.lower() == "daria"):
-                daria_link = href
-                if not daria_link.startswith(('http://', 'https://')):
-                    daria_link = urljoin(self.target['base_url'], daria_link)
-                self.logger.info("Found Daria's character page: %s", daria_link)
-                break
+        self.logger.error("Could not find %s's character page", character_name)
+        return None
 
-        if not daria_link:
-            self.logger.error("Could not find Daria's character page link.")
+    def extract_character_name(self, soup):
+        """
+        Extract a character's full name from their page.
+
+        Args:
+            soup: BeautifulSoup object of the character's page
+
+        Returns:
+            Character's full name or empty string if not found
+        """
+        # Look for "Full Name:" in bold text
+        for bold in soup.find_all(['strong', 'b']):
+            if "Full Name:" in bold.get_text():
+                # Get the parent element that contains the full text
+                parent = bold.parent
+                if parent:
+                    full_text = parent.get_text()
+                    # Extract the name after "Full Name:"
+                    if "Full Name:" in full_text:
+                        name_part = full_text.split("Full Name:", 1)[1].strip()
+                        # If there's another field after the name, cut it off
+                        if "Current Age:" in name_part:
+                            name_part = name_part.split("Current Age:", 1)[0].strip()
+                        return name_part
+
+        return ""
+
+    def find_alter_egos_link(self, soup, character_name):
+        """
+        Find the alter egos page link and fragment identifier from a character page.
+
+        Args:
+            soup: BeautifulSoup object of the character's page
+            character_name: Name of the character for logging
+
+        Returns:
+            Tuple of (alter_egos_url, fragment_identifier) or (None, None) if not found
+        """
+        alter_egos_link = None
+        fragment = None
+
+        # Look for links to the alter egos page
+        for link in soup.select("a"):
+            href = link.get('href', '')
+            if href and "art_alter-egos.html" in href:
+                # If the link has a fragment identifier (#daria), extract it
+                if "#" in href:
+                    base_href, fragment = href.split("#", 1)
+                    alter_egos_link = urljoin(self.target['base_url'], base_href)
+                else:
+                    alter_egos_link = urljoin(self.target['base_url'], href)
+
+                self.logger.info("Found alter egos link for %s: %s (fragment: %s)",
+                                character_name, alter_egos_link, fragment)
+                return alter_egos_link, fragment
+
+        self.logger.warning("Could not find alter egos link for %s", character_name)
+        return None, None
+
+    def extract_character_alter_egos(self, soup, character_name, fragment):
+        """
+        Extract alter ego images for a specific character from the alter egos page.
+
+        Args:
+            soup: BeautifulSoup object of the alter egos page
+            character_name: Name of the character to extract images for
+            fragment: Fragment identifier for the character's section
+
+        Returns:
+            List of alter ego image data for the character
+        """
+        alter_egos = []
+        character_id = character_name.lower()
+
+        # Try to find the character's section using the fragment
+        section = None
+        if fragment:
+            # First try by id
+            section = soup.find(id=fragment)
+
+            # Then try by name attribute (for <a name="...">)
+            if not section:
+                anchor = soup.find("a", {"name": fragment})
+                if anchor:
+                    section = anchor.parent
+
+        # If we found a specific section, search within it
+        elements_to_search = section.find_all('img') if section else soup.find_all('img')
+
+        for img in elements_to_search:
+            src = img.get('src', '')
+            if src and f"{character_id}_" in src.lower():
+                # This is an image for our character
+                if not src.startswith(('http://', 'https://')):
+                    src = urljoin(self.target['base_url'], src)
+
+                image_data = {
+                    "link": src,
+                    "width": img.get('width', ''),
+                    "height": img.get('height', '')
+                }
+
+                alter_egos.append(image_data)
+
+        self.logger.info("Found %d alter ego images for %s", len(alter_egos), character_name)
+        return alter_egos
+
+    def scrape_character(self, character_name):
+        """
+        Scrape a character's basic info and alter ego images.
+
+        Args:
+            character_name: Name of the character to scrape
+
+        Returns:
+            Dictionary with character data or None if failed
+        """
+        self.logger.info("Starting scrape for character: %s", character_name)
+
+        # Step 1: Find the character's page
+        character_url = self.find_character_page(character_name)
+        if not character_url:
             return None
 
-        # Step 3: Scrape Daria's character page
-        response = self.fetch_page(daria_link)
+        # Step 2: Get the character's page content
+        response = self.fetch_page(character_url)
         if not response:
-            self.logger.error("Failed to retrieve Daria's character page.")
+            self.logger.error("Failed to retrieve %s's character page", character_name)
             return None
 
-        daria_soup = self.parse_html(response.text)
+        soup = self.parse_html(response.text)
 
-        # Extract basic character info
-        daria_data = {
-            "url": daria_link,
-            "alter_egos_images": []
+        # Step 3: Extract the character's full name
+        full_name = self.extract_character_name(soup)
+        if not full_name:
+            self.logger.warning("Could not extract full name for %s, using provided name", character_name)
+            full_name = character_name.title()  # Capitalize first letter
+
+        # Step 4: Find link to alter egos page
+        alter_egos_url, fragment = self.find_alter_egos_link(soup, character_name)
+
+        alter_egos_images = []
+        if alter_egos_url:
+            # Step 5: Get the alter egos page
+            response = self.fetch_page(alter_egos_url)
+            if response:
+                alter_egos_soup = self.parse_html(response.text)
+
+                # Step 6: Extract character's alter ego images
+                alter_egos_images = self.extract_character_alter_egos(
+                    alter_egos_soup, character_name, fragment
+                )
+            else:
+                self.logger.error("Failed to retrieve the alter egos page")
+
+        # Create the character data structure
+        character_data = {
+            "url": character_url,
+            "full_name": full_name,
+            "alter_egos_images": alter_egos_images
         }
 
-        # Extract all the specific character information
-        character_info_keys = [
-            "Full Name:", "Current Age:", "Current Vocation:",
-            "Season One Age:", "Season One Vocation:", "Parents:",
-            "Siblings:", "First Appearance:", "Status at end of series:",
-            "Daria on herself:"
-        ]
+        return character_data
 
-        # Initialize all keys with empty values
-        for key in character_info_keys:
-            clean_key = key.replace(":", "").lower().replace(" ", "_")
-            daria_data[clean_key] = ""
-
-        # Improved extraction method for character details
-        # First, look for strong/b tags that might contain our keys
-        for bold in daria_soup.find_all(['strong', 'b']):
-            bold_text = bold.get_text(strip=True)
-
-            # Check if this bold text contains any of our keys
-            for key in character_info_keys:
-                if key.lower() in bold_text.lower():
-                    # Found a key, now get the value
-                    # It might be in the parent element after the bold tag
-                    parent = bold.parent
-                    if parent:
-                        # Get the text of the parent and split by the bold text
-                        parent_text = parent.get_text(strip=True)
-                        if key in parent_text:
-                            value = parent_text.split(key, 1)[1].strip()
-                            clean_key = key.replace(":", "").lower().replace(" ", "_")
-                            daria_data[clean_key] = value
-                            self.logger.info("Found %s: %s", key, value)
-
-        # If we still have empty values, try a more aggressive approach
-        # Look for text containing our keys anywhere in the document
-        for key in character_info_keys:
-            clean_key = key.replace(":", "").lower().replace(" ", "_")
-            if not daria_data[clean_key]:  # Only if we haven't found it yet
-                for element in daria_soup.find_all(text=re.compile(re.escape(key), re.IGNORECASE)):
-                    # Get the full text of the parent element
-                    parent = element.parent
-                    if parent:
-                        parent_text = parent.get_text(strip=True)
-                        # Split by the key to get the value
-                        if key in parent_text:
-                            value = parent_text.split(key, 1)[1].strip()
-                            daria_data[clean_key] = value
-                            self.logger.info("Found %s: %s", key, value)
-                            break
-
-        # Special handling for common patterns
-        # Sometimes the information is in a specific format like "Key: Value"
-        for p in daria_soup.find_all('p'):
-            p_text = p.get_text(strip=True)
-            for key in character_info_keys:
-                if key in p_text and not daria_data[key.replace(":", "").lower().replace(" ", "_")]:
-                    value = p_text.split(key, 1)[1].strip()
-                    clean_key = key.replace(":", "").lower().replace(" ", "_")
-                    daria_data[clean_key] = value
-                    self.logger.info("Found %s: %s", key, value)
-
-        # Get character description paragraphs
-        daria_data["description"] = []
-        for p in daria_soup.select("p"):
-            text = p.get_text(strip=True)
-            if text and len(text) > 50:  # Assuming descriptions are longer paragraphs
-                # Skip paragraphs that contain our specific keys
-                if not any(key in text for key in character_info_keys):
-                    daria_data["description"].append(text)
-
-        # Step 4: Find link to Daria's alter egos
-        alter_egos_link = None
-        alter_egos_fragment = None
-
-        for link in daria_soup.select("a"):
-            href = link.get('href')
-            text = link.text.strip()
-
-            if href and "art_alter-egos.html" in href:
-                alter_egos_link = href
-                # Extract the fragment identifier (#daria)
-                if "#" in href:
-                    alter_egos_fragment = href.split("#")[1]
-
-                if not alter_egos_link.startswith(('http://', 'https://')):
-                    alter_egos_link = urljoin(self.target['base_url'], alter_egos_link)
-
-                self.logger.info("Found Daria's alter egos link: %s", alter_egos_link)
-                break
-
-        if not alter_egos_link:
-            self.logger.error("Could not find Daria's alter egos link.")
-            # We'll still return the character data we have
-            return daria_data
-
-        # Step 5: Scrape the alter egos page for Daria's section
-        response = self.fetch_page(alter_egos_link)
-        if not response:
-            self.logger.error("Failed to retrieve the alter egos page.")
-            return daria_data
-
-        alter_egos_soup = self.parse_html(response.text)
-
-        # Find Daria's section using the fragment identifier
-        daria_section = None
-        if alter_egos_fragment:
-            # Try to find by id first
-            daria_section = alter_egos_soup.find(id=alter_egos_fragment)
-
-            # If not found by id, try to find by name attribute (for <a name="daria">)
-            if not daria_section:
-                daria_section = alter_egos_soup.find("a", {"name": alter_egos_fragment})
-
-        # If we found Daria's section, extract images from it and following siblings
-        # until we hit another section
-        if daria_section:
-            self.logger.info("Found Daria's alter egos section with fragment: %s", alter_egos_fragment)
-
-            # Start from Daria's section and collect images until next section
-            current = daria_section
-            in_daria_section = True
-
-            while current and in_daria_section:
-                # Check if this is a new section header
-                if current != daria_section and current.name in ['h1', 'h2', 'h3', 'h4'] and current.get_text(strip=True):
-                    in_daria_section = False
-                    break
-
-                # Extract images from this element
-                for img in current.find_all('img'):
-                    src = img.get('src')
-                    if src:
-                        # Get parent link if image is within an <a> tag
-                        parent_link = img.find_parent('a')
-                        if parent_link and parent_link.get('href'):
-                            href = parent_link.get('href')
-                            if not href.startswith(('http://', 'https://')):
-                                href = urljoin(self.target['base_url'], href)
-
-                            # Only include the link key as requested
-                            image_data = {
-                                "link": href,
-                                "width": img.get('width', ''),
-                                "height": img.get('height', '')
-                            }
-
-                            daria_data["alter_egos_images"].append(image_data)
-                        else:
-                            # If no parent link, use the image source as the link
-                            if not src.startswith(('http://', 'https://')):
-                                src = urljoin(self.target['base_url'], src)
-
-                            image_data = {
-                                "link": src,
-                                "width": img.get('width', ''),
-                                "height": img.get('height', '')
-                            }
-
-                            daria_data["alter_egos_images"].append(image_data)
-
-                # Move to next sibling
-                current = current.next_sibling
-        else:
-            # If we couldn't find Daria's specific section, just look for any images
-            # that might be related to Daria
-            self.logger.warning("Could not find Daria's specific section with fragment: %s", alter_egos_fragment)
-            self.logger.info("Searching for Daria-related images in the entire page")
-
-            for img in alter_egos_soup.find_all('img'):
-                src = img.get('src')
-
-                # Only include images that seem related to Daria
-                if src and 'daria' in src.lower():
-                    # Get parent link if image is within an <a> tag
-                    parent_link = img.find_parent('a')
-                    if parent_link and parent_link.get('href'):
-                        href = parent_link.get('href')
-                        if not href.startswith(('http://', 'https://')):
-                            href = urljoin(self.target['base_url'], href)
-
-                        # Only include the link key as requested
-                        image_data = {
-                            "link": href,
-                            "width": img.get('width', ''),
-                            "height": img.get('height', '')
-                        }
-
-                        daria_data["alter_egos_images"].append(image_data)
-                    else:
-                        # If no parent link, use the image source as the link
-                        if not src.startswith(('http://', 'https://')):
-                            src = urljoin(self.target['base_url'], src)
-
-                        image_data = {
-                            "link": src,
-                            "width": img.get('width', ''),
-                            "height": img.get('height', '')
-                        }
-
-                        daria_data["alter_egos_images"].append(image_data)
-
-        self.logger.info("Found %d alter ego images for Daria", len(daria_data["alter_egos_images"]))
-        return daria_data
-
-    def display_daria_json(self, daria_data):
-        """Display Daria's character data in JSON format for debugging."""
-        if not daria_data:
-            print("No data found for Daria.")
+    def display_character_json(self, character_data):
+        """Display character data in JSON format for debugging."""
+        if not character_data:
+            print("No data found for character.")
             return
 
         # Convert to JSON and print
-        json_data = json.dumps(daria_data, indent=2)
+        json_data = json.dumps(character_data, indent=2)
         print("\n" + "="*70)
-        print("Daria Character Data with Alter Ego Images")
+        print(f"{character_data.get('full_name', 'Character')} Data with Alter Ego Images")
         print("="*70)
         print(json_data)
         print("="*70)
 
-    def run(self):
-        """Run the scraper with focus on Daria's character and alter ego images."""
-        self.logger.info("Starting Daria web scraper with focus on Daria's character and alter egos")
+    def run(self, character_name=None):
+        """
+        Run the scraper for a specific character or default to Daria.
 
-        # Scrape Daria's character info and alter ego images
-        daria_data = self.scrape_daria_character_with_alter_egos()
+        Args:
+            character_name: Name of the character to scrape (defaults to 'daria')
 
-        if daria_data:
-            # Display Daria's data in JSON format
-            self.display_daria_json(daria_data)
+        Returns:
+            True if successful, False otherwise
+        """
+        # Default to Daria if no character specified
+        character_name = character_name or "daria"
+        self.logger.info("Starting web scraper for character: %s", character_name)
+
+        # Scrape character info and alter ego images
+        character_data = self.scrape_character(character_name)
+
+        if character_data:
+            # Display character data in JSON format
+            self.display_character_json(character_data)
 
             # Save the data
             output_file = self.save_data(
-                daria_data,
-                f"{config.OUTPUT_CONFIG['FILENAME_PREFIX']}_daria_character"
+                character_data,
+                f"{config.OUTPUT_CONFIG['FILENAME_PREFIX']}_{character_name.lower()}_character"
             )
 
             if output_file:
-                self.logger.info("Daria's character data saved to %s", output_file)
+                self.logger.info("%s's character data saved to %s", character_name, output_file)
+                return True
         else:
-            self.logger.error("Failed to scrape Daria's character information")
+            self.logger.error("Failed to scrape %s's character information", character_name)
 
         self.logger.info("Scraping complete")
-        return True
+        return False
+
 
 def main():
     """Main entry point for the scraper."""
+    # Parse command-line arguments
+    parser = argparse.ArgumentParser(description="Scrape Daria character information")
+    parser.add_argument("character", nargs="?", default="daria",
+                        help="Name of the character to scrape (default: daria)")
+    args = parser.parse_args()
+
+    # Create and run the scraper
     scraper = DariaScraper()
-    scraper.run()
+    scraper.run(args.character)
 
 if __name__ == "__main__":
     main()
