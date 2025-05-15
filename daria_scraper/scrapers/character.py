@@ -19,15 +19,7 @@ class CharacterScraper(BaseScraper):
             logger: Logger instance for recording activity
             config: Configuration object
         """
-        super().__init__(http_service, parser, logger, config)
-
-        # Define the character info keys we're looking for
-        self.character_info_keys = [
-            "Full Name:", "Current Age:", "Current Vocation:",
-            "Season One Age:", "Season One Vocation:", "Parents:",
-            "Siblings:", "First Appearance:", "Status at end of series:",
-            "Daria on herself:"
-        ]
+        BaseScraper.__init__(self, http_service, parser, logger, config)
 
     def find_character_link(self, characters_url, character_name):
         """
@@ -80,94 +72,47 @@ class CharacterScraper(BaseScraper):
         # Create a character model
         character = Character(character_url)
 
-        # Extract character information
-        self._extract_character_details(soup, character)
-
-        # Extract character description
-        self._extract_character_description(soup, character)
+        # Extract character name
+        self._extract_character_name(soup, character)
 
         return character
 
-    def _extract_character_details(self, soup, character):
+    def _extract_character_name(self, soup, character):
         """
-        Extract specific character details from the soup.
+        Extract character name from the soup.
 
         Args:
             soup: BeautifulSoup object of the character page
             character: Character model to populate
         """
-        # Initialize mapping from info keys to model attributes
-        key_to_attr = {
-            "Full Name:": "full_name",
-            "Current Age:": "current_age",
-            "Current Vocation:": "current_vocation",
-            "Season One Age:": "season_one_age",
-            "Season One Vocation:": "season_one_vocation",
-            "Parents:": "parents",
-            "Siblings:": "siblings",
-            "First Appearance:": "first_appearance",
-            "Status at end of series:": "status_at_end_of_series",
-            "Daria on herself:": "character_on_self"
-        }
-
-        # Method 1: Look for bold/strong tags containing our keys
+        # Look for the full name in bold text
         for bold in soup.find_all(['strong', 'b']):
             bold_text = self.extract_text(bold)
+            if "Full Name:" in bold_text:
+                parent = bold.parent
+                if parent:
+                    parent_text = self.extract_text(parent)
+                    if "Full Name:" in parent_text:
+                        full_name = parent_text.split("Full Name:", 1)[1].strip()
+                        # Clean up the name if it contains other text
+                        if "Current Age:" in full_name:
+                            full_name = full_name.split("Current Age:", 1)[0].strip()
+                        character.full_name = full_name
+                        self.logger.info("Found Full Name: %s", full_name)
+                        return
 
-            for key in self.character_info_keys:
-                if key.lower() in bold_text.lower():
-                    # Found a key, now get the value from parent element
-                    parent = bold.parent
-                    if parent:
-                        parent_text = self.extract_text(parent)
-                        if key in parent_text:
-                            value = parent_text.split(key, 1)[1].strip()
-                            attr_name = key_to_attr.get(key)
-                            if attr_name:
-                                setattr(character, attr_name, value)
-                                self.logger.info("Found %s: %s", key, value)
-
-        # Method 2: Look for text containing our keys anywhere
-        for key in self.character_info_keys:
-            attr_name = key_to_attr.get(key)
-            if attr_name and not getattr(character, attr_name):
-                # Only if we haven't found it yet
-                for element in soup.find_all(text=re.compile(re.escape(key), re.IGNORECASE)):
-                    parent = element.parent
-                    if parent:
-                        parent_text = self.extract_text(parent)
-                        if key in parent_text:
-                            value = parent_text.split(key, 1)[1].strip()
-                            setattr(character, attr_name, value)
-                            self.logger.info("Found %s: %s", key, value)
-                            break
-
-        # Method 3: Look for paragraphs containing our keys
-        for p in soup.find_all('p'):
-            p_text = self.extract_text(p)
-            for key in self.character_info_keys:
-                attr_name = key_to_attr.get(key)
-                if attr_name and not getattr(character, attr_name) and key in p_text:
-                    value = p_text.split(key, 1)[1].strip()
-                    setattr(character, attr_name, value)
-                    self.logger.info("Found %s: %s", key, value)
-
-    def _extract_character_description(self, soup, character):
-        """
-        Extract character description paragraphs.
-
-        Args:
-            soup: BeautifulSoup object of the character page
-            character: Character model to populate
-        """
-        # Look for longer paragraphs that don't contain our info keys
-        for p in soup.find_all('p'):
-            text = self.extract_text(p)
-
-            # Consider it a description if it's a longer paragraph
-            # and doesn't contain any of our specific info keys
-            if text and len(text) > 50 and not any(key in text for key in self.character_info_keys):
-                character.description.append(text)
+        # If name not found yet, try broader search
+        for element in soup.find_all(text=re.compile("Full Name:", re.IGNORECASE)):
+            parent = element.parent
+            if parent:
+                parent_text = self.extract_text(parent)
+                if "Full Name:" in parent_text:
+                    full_name = parent_text.split("Full Name:", 1)[1].strip()
+                    if "Current Age:" in full_name:
+                        full_name = full_name.split("Current Age:", 1)[0].strip()
+                    character.full_name = full_name
+                    self.logger.info("Found Full Name: %s", full_name)
+                    return
 
     def find_alter_egos_link(self, character_url):
         """
@@ -201,3 +146,78 @@ class CharacterScraper(BaseScraper):
 
         self.logger.error("Could not find alter egos link")
         return None, None
+
+    def scrape_alter_egos(self, alter_egos_url, fragment, character):
+        """
+        Scrape alter egos images from the alter egos page.
+
+        Args:
+            alter_egos_url: URL of the alter egos page
+            fragment: Fragment identifier for the character's section
+            character: Character model to update with alter ego images
+
+        Returns:
+            Updated character model with alter egos images
+        """
+        self.logger.info("Scraping alter egos from: %s (fragment: %s)", alter_egos_url, fragment)
+
+        soup = self.fetch_and_parse(alter_egos_url)
+        if not soup:
+            return character
+
+        # Get character name part for filtering images
+        character_id = self._get_character_id(character.full_name)
+
+        # Find the section for this character
+        section = None
+        if fragment:
+            # Try to find by fragment first
+            section = soup.find(id=fragment)
+            if not section:
+                # Try to find anchor with name attribute
+                section = soup.find('a', {'name': fragment})
+                if section:
+                    section = section.parent
+
+        # If section not found, search the entire page
+        if not section:
+            section = soup
+
+        # Extract all image links that match the character
+        for img in section.find_all('img'):
+            src = img.get('src')
+            if src and f"{character_id}_" in src.lower():
+                width = img.get('width', '')
+                height = img.get('height', '')
+
+                full_url = self.build_full_url(src)
+
+                # Add image info to character
+                image_info = {
+                    "link": full_url,
+                    "width": width,
+                    "height": height
+                }
+                character.alter_egos_images.append(image_info)
+                self.logger.info("Found alter ego image: %s", full_url)
+
+        return character
+
+    def _get_character_id(self, full_name):
+        """
+        Get character ID from full name for matching alter ego images.
+
+        Args:
+            full_name: Character's full name
+
+        Returns:
+            Character ID string for matching images
+        """
+        if not full_name:
+            return ""
+
+        # Extract first name from full name
+        first_name = full_name.split()[0].lower()
+
+        # Special case handling (example: "daria" -> "daria")
+        return first_name
